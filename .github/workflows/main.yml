@@ -10,33 +10,27 @@ jobs:
 
     steps:
 
-      - name: Fix RDP Service + Listener
+      - name: Enable & Fix RDP Service
         shell: powershell
         run: |
           # Enable Remote Desktop
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
-          
-          # Fix user authentication and security layer
+
+          # RDP Auth Fix
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MinEncryptionLevel" -Value 1 -Force
 
-          # Fix CredSSP
-          Set-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -Name "AllowEncryptionOracle" -Value 2 -Force
+          # Firewall Fix
+          netsh advfirewall firewall add rule name="RDP-IN"  dir=in  action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="RDP-OUT" dir=out action=allow protocol=TCP localport=3389
 
-          # Enable Firewall ports
-          netsh advfirewall firewall add rule name="RDP-In"  dir=in  action=allow protocol=TCP localport=3389
-          netsh advfirewall firewall add rule name="RDP-Out" dir=out action=allow protocol=TCP localport=3389
-
-          # Enable and restart TermService
+          # Enable Service
           Set-Service TermService -StartupType Automatic
           Start-Service TermService
 
-          # Reset RDP listener (fixes 0x204)
-          qwinsta
+          # Reset Listener
           reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v PortNumber /t REG_DWORD /d 3389 /f
-
-          # Force Windows to rebuild listener
           Restart-Service TermService -Force
 
 
@@ -45,7 +39,6 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Security
 
-          # Generate strong password
           $chars = ([char[]](33..126))
           $password = -join (1..14 | ForEach-Object { $chars | Get-Random })
 
@@ -69,35 +62,35 @@ jobs:
       - name: Connect Tailscale
         shell: powershell
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="gh-rdp-$env:GITHUB_RUN_ID"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="win-rdp-$env:GITHUB_RUN_ID"
 
           Start-Sleep -Seconds 5
 
-          $tsip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$tsip"
+          $IP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$IP"
 
 
-      - name: Confirm RDP Port
+      - name: Check RDP Port
         shell: powershell
         run: |
-          Write-Host "Checking RDP on $env:TAILSCALE_IP"
+          Write-Host "Testing RDP on $env:TAILSCALE_IP"
           $t = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $t.TcpTestSucceeded) { 
-            Write-Error "3389 unreachable"
+            Write-Error "Port 3389 unreachable!"
             exit 1
           }
-          Write-Host "3389 OK!"
+          Write-Host "RDP port OK!"
 
 
       - name: Keep Alive
         shell: powershell
         run: |
-          Write-Host "============================"
-          Write-Host "  RDP is Ready!"
-          Write-Host "  IP: $env:TAILSCALE_IP"
-          Write-Host "  USER: $env:RDP_USER"
-          Write-Host "  PASS: $env:RDP_PASSWORD"
-          Write-Host "============================"
+          Write-Host "================================"
+          Write-Host "RDP Ready"
+          Write-Host "IP: $env:TAILSCALE_IP"
+          Write-Host "USER: $env:RDP_USER"
+          Write-Host "PASS: $env:RDP_PASSWORD"
+          Write-Host "================================"
 
           while ($true) {
               Start-Sleep -Seconds 300
