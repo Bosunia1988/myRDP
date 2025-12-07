@@ -10,88 +10,71 @@ jobs:
 
     steps:
 
-      - name: Enable & Fix RDP Service
-        shell: powershell
+      - name: Enable RDP + Fix NLA
         run: |
-          # Enable Remote Desktop
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Force
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
 
-          # RDP Auth Fix
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "MinEncryptionLevel" -Value 1 -Force
+          # Disable NLA (Fix for error 0x204)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
 
-          # Firewall Fix
-          netsh advfirewall firewall add rule name="RDP-IN"  dir=in  action=allow protocol=TCP localport=3389
-          netsh advfirewall firewall add rule name="RDP-OUT" dir=out action=allow protocol=TCP localport=3389
+          # Set RDP Security Layer to RDP (not SSL)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
 
-          # Enable Service
-          Set-Service TermService -StartupType Automatic
-          Start-Service TermService
-
-          # Reset Listener
-          reg add "HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v PortNumber /t REG_DWORD /d 3389 /f
-          Restart-Service TermService -Force
+          # Open Firewall Port
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
 
 
       - name: Create RDP User
-        shell: powershell
         run: |
-          Add-Type -AssemblyName System.Security
-
-          $chars = ([char[]](33..126))
-          $password = -join (1..14 | ForEach-Object { $chars | Get-Random })
-
+          # Generate Strong Password without escape issues
+          $password = [System.Web.Security.Membership]::GeneratePassword(16,3)
           $secure = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
-          Add-LocalGroupMember -Group Administrators -Member RDP
 
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=RDP"
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD=$password"
+          New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+          echo "RDP_USER=RDP" >> $env:GITHUB_ENV
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
 
 
       - name: Install Tailscale
-        shell: powershell
         run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $file = "$env:TEMP\ts.msi"
-          Invoke-WebRequest $url -OutFile $file
-          Start-Process msiexec.exe -ArgumentList "/i `"$file`" /quiet /norestart" -Wait
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait
 
 
       - name: Connect Tailscale
-        shell: powershell
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" --hostname="win-rdp-$env:GITHUB_RUN_ID"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TS_AUTH }} `
+            --hostname=win-${{ github.run_id }}
 
-          Start-Sleep -Seconds 5
-
-          $IP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          Add-Content -Path $env:GITHUB_ENV -Value "TAILSCALE_IP=$IP"
-
-
-      - name: Check RDP Port
-        shell: powershell
-        run: |
-          Write-Host "Testing RDP on $env:TAILSCALE_IP"
-          $t = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $t.TcpTestSucceeded) { 
-            Write-Error "Port 3389 unreachable!"
-            exit 1
+          $ip=""
+          while (-not $ip) {
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+            Start-Sleep 3
           }
-          Write-Host "RDP port OK!"
+
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
+
+
+      - name: RDP Info
+        run: |
+          Write-Host "=========================="
+          Write-Host "       RDP READY"
+          Write-Host "IP:   $env:TS_IP"
+          Write-Host "User: $env:RDP_USER"
+          Write-Host "Pass: $env:RDP_PASSWORD"
+          Write-Host "=========================="
 
 
       - name: Keep Alive
-        shell: powershell
         run: |
-          Write-Host "================================"
-          Write-Host "RDP Ready"
-          Write-Host "IP: $env:TAILSCALE_IP"
-          Write-Host "USER: $env:RDP_USER"
-          Write-Host "PASS: $env:RDP_PASSWORD"
-          Write-Host "================================"
-
           while ($true) {
-              Start-Sleep -Seconds 300
+            Write-Host "[$(Get-Date)] RDP Running..."
+            Start-Sleep -Seconds 300
           }
